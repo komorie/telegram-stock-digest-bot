@@ -17,6 +17,7 @@ def build_digest(
     *,
     start_local: datetime,
     end_local: datetime,
+    period_label_override: str | None = None,
 ) -> str:
     """최종 텔레그램 메시지를 만든다.
 
@@ -24,9 +25,10 @@ def build_digest(
     LLM이 꺼져 있거나 실패하면 규칙 기반 요약으로 돌아간다.
     PDF 단독 첨부 파일 목록은 LLM 결과 뒤에 코드로 보강한다.
     """
-    period_label = format_period(start_local, end_local)
+    period_label = period_label_override or format_period(start_local, end_local)
+    llm_messages = tuple(message for message in messages if not _is_pdf_only(message))
     try:
-        generated = generate_full_digest(config.llm, messages, config.portfolio, period_label=period_label)
+        generated = generate_full_digest(config.llm, llm_messages, config.portfolio, period_label=period_label)
     except RuntimeError as exc:
         generated = None
         fallback_note = f"\n\n<i>LLM 요약 실패: {html.escape(str(exc))}</i>"
@@ -37,7 +39,7 @@ def build_digest(
         attachment_section = build_pdf_attachment_section(messages, config.portfolio)
         return f"<b>다이제스트</b> | <b>{html.escape(period_label)}</b>\n\n{generated}\n\n{attachment_section}".strip()
 
-    general = _build_general_digest(messages, config, period_label)
+    general = _build_general_digest(messages, config, period_label, allow_llm=not fallback_note)
     portfolio = build_portfolio_section(messages, config.portfolio)
     return f"<b>다이제스트</b> | <b>{html.escape(period_label)}</b>\n\n{general}\n\n{portfolio}{fallback_note}".strip()
 
@@ -142,8 +144,17 @@ def build_pdf_attachment_section(
     return "\n".join(lines)
 
 
-def _build_general_digest(messages: tuple[CollectedMessage, ...], config: AppConfig, period_label: str) -> str:
+def _build_general_digest(
+    messages: tuple[CollectedMessage, ...],
+    config: AppConfig,
+    period_label: str,
+    *,
+    allow_llm: bool = True,
+) -> str:
     """설정이 있으면 LLM으로 일반 뉴스를 요약하고, 없으면 단순 요약을 쓴다."""
+    if not allow_llm:
+        return _fallback_general_digest(messages)
+
     try:
         generated = generate_general_digest(config.llm, messages, period_label=period_label)
     except RuntimeError as exc:

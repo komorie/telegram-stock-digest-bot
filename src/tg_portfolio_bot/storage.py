@@ -37,6 +37,18 @@ CREATE TABLE IF NOT EXISTS digest_runs (
   period_end_utc TEXT NOT NULL,
   sent_at_utc TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS daily_digest_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  period_key TEXT NOT NULL UNIQUE,
+  period_start_utc TEXT NOT NULL,
+  period_end_utc TEXT NOT NULL,
+  digest_hash TEXT NOT NULL,
+  sent_at_utc TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_digest_runs_end
+ON daily_digest_runs(period_end_utc);
 """
 
 
@@ -125,6 +137,61 @@ class MessageStore:
                     digest_hash,
                     start_utc.astimezone(UTC).isoformat(),
                     end_utc.astimezone(UTC).isoformat(),
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+            conn.commit()
+
+    def has_sent_daily_period(self, period_key: str) -> bool:
+        """11시 기준 daily digest 기간을 이미 발송했는지 확인한다."""
+
+        with closing(self.connect()) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM daily_digest_runs WHERE period_key = ?",
+                (period_key,),
+            ).fetchone()
+        return row is not None
+
+    def latest_daily_period_end(self) -> datetime | None:
+        """마지막으로 성공 발송된 daily digest의 종료 시각을 UTC로 반환한다."""
+
+        with closing(self.connect()) as conn:
+            row = conn.execute(
+                """
+                SELECT period_end_utc
+                FROM daily_digest_runs
+                ORDER BY period_end_utc DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        if row is None:
+            return None
+        return datetime.fromisoformat(row["period_end_utc"]).astimezone(UTC)
+
+    def record_daily_digest(
+        self,
+        *,
+        period_key: str,
+        digest_hash: str,
+        start_utc: datetime,
+        end_utc: datetime,
+    ) -> None:
+        """daily catch-up 명령이 성공적으로 보낸 기간을 기록한다."""
+
+        with closing(self.connect()) as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO daily_digest_runs (
+                  period_key, period_start_utc, period_end_utc,
+                  digest_hash, sent_at_utc
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    period_key,
+                    start_utc.astimezone(UTC).isoformat(),
+                    end_utc.astimezone(UTC).isoformat(),
+                    digest_hash,
                     datetime.now(UTC).isoformat(),
                 ),
             )

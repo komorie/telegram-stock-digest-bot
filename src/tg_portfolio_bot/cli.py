@@ -3,12 +3,19 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-from datetime import UTC, date, datetime, time, timedelta, timezone
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from datetime import datetime, timedelta
 
 from .collector import collect_messages
 from .config import load_config, load_env_file, validate_config
 from .digest import build_digest, digest_hash
+from .periods import (
+    DigestPeriod,
+    latest_completed_daily_end,
+    load_timezone,
+    make_cursor_period,
+    make_lookback_period,
+    period_label,
+)
 from .sender import send_digest
 from .storage import MessageStore
 
@@ -20,6 +27,7 @@ def main(argv: list[str] | None = None) -> int:
     - collect: Telegram -> SQLite
     - digest: SQLite -> 터미널 출력
     - run: Telegram -> SQLite -> 다이제스트 -> 선택적으로 텔레그램 봇 발송
+    - catch-up: 11시 기준으로 누락된 daily digest를 순서대로 처리
     """
     _configure_console_encoding()
     parser = _build_parser()
@@ -36,25 +44,25 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "collect":
         validate_config(config, require_telegram=True)
-        start_utc, _end_utc, _start_local, _end_local = _period(config.timezone, config.lookback_hours, args.date)
+        period = _period(config.timezone, config.lookback_hours, args.date)
         _log("Collecting Telegram messages. First run may ask for phone/code/password...")
-        inserted = asyncio.run(_collect(config, store, start_utc))
+        inserted = asyncio.run(_collect(config, store, period.start_utc))
         print(f"Inserted {inserted} new messages.")
         return 0
     if args.command == "digest":
-        start_utc, end_utc, start_local, end_local = _period(config.timezone, config.lookback_hours, args.date)
-        digest = _render(config, store, start_utc, end_utc, start_local, end_local)
+        period = _period(config.timezone, config.lookback_hours, args.date)
+        digest = _render(config, store, period)
         print(digest)
         return 0
     if args.command == "run":
-        start_utc, end_utc, start_local, end_local = _period(config.timezone, config.lookback_hours, args.date)
+        period = _period(config.timezone, config.lookback_hours, args.date)
         if not args.skip_collect:
             validate_config(config, require_telegram=True)
             _log("Collecting Telegram messages. First run may ask for phone/code/password...")
-            inserted = asyncio.run(_collect(config, store, start_utc))
+            inserted = asyncio.run(_collect(config, store, period.start_utc))
             print(f"Inserted {inserted} new messages.")
         _log("Building digest...")
-        digest = _render(config, store, start_utc, end_utc, start_local, end_local)
+        digest = _render(config, store, period)
         digest_id = digest_hash(digest)
         if args.dry_run or args.no_send:
             print(digest)
@@ -65,9 +73,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         _log("Sending digest to Telegram bot chat...")
         send_digest(config.bot.token, config.bot.chat_id, digest)
-        store.record_sent_digest(digest_id, start_utc, end_utc)
+        store.record_sent_digest(digest_id, period.start_utc, period.end_utc)
         print("Digest sent.")
         return 0
+    if args.command == "catch-up":
+        return _catch_up(config, store, args)
     parser.error(f"Unknown command: {args.command}")
     return 2
 
@@ -96,46 +106,131 @@ async def _collect(config, store: MessageStore, start_utc: datetime) -> int:
 def _render(
     config,
     store: MessageStore,
-    start_utc: datetime,
-    end_utc: datetime,
-    start_local: datetime,
-    end_local: datetime,
+    period: DigestPeriod,
+    *,
+    label: str | None = None,
 ) -> str:
     # digest.py는 텔레그램과 통신하지 않고, 저장된 메시지를 보기 좋게 포맷만 한다.
-    messages = store.list_messages(start_utc, end_utc)
-    return build_digest(messages, config, start_local=start_local, end_local=end_local)
+    messages = store.list_messages(period.start_utc, period.end_utc)
+    return build_digest(
+        messages,
+        config,
+        start_local=period.start_local,
+        end_local=period.end_local,
+        period_label_override=label,
+    )
 
 
 def _period(
     timezone_name: str,
     lookback_hours: int,
     selected_date: str | None,
-) -> tuple[datetime, datetime, datetime, datetime]:
+) -> DigestPeriod:
     # 사용자는 로컬 날짜로 생각하지만, 텔레그램 타임스탬프와 DB 필터는 UTC를 쓴다.
-    # 그래서 각 계층이 필요한 표현을 쓰도록 로컬 시간과 UTC 시간을 모두 돌려준다.
-    tz = _load_timezone(timezone_name)
-    if selected_date:
-        day = date.fromisoformat(selected_date)
-        start_local = datetime.combine(day, time.min, tzinfo=tz)
-        end_local = start_local + timedelta(days=1)
+    # make_lookback_period가 로컬 시간과 UTC 시간을 함께 가진 값으로 돌려준다.
+    return make_lookback_period(timezone_name, lookback_hours, selected_date)
+
+
+def _catch_up(config, store: MessageStore, args) -> int:
+    periods = _daily_periods_to_run(config, store, max_days=args.max_days, force=args.force_send)
+    if not periods:
+        print("No catch-up periods to process.")
+        return 0
+
+    if not args.skip_collect:
+        validate_config(config, require_telegram=True)
+        _log(f"Collecting Telegram messages from {periods[0].start_local.isoformat()}...")
+        inserted = asyncio.run(_collect(config, store, periods[0].start_utc))
+        print(f"Inserted {inserted} new messages.")
+
+    if not (args.dry_run or args.no_send):
+        validate_config(config, require_bot=True)
+
+    for index, period in enumerate(periods, start=1):
+        label = period_label(period)
+        _log(f"Building digest {index}/{len(periods)}: {label}")
+        digest = _render(config, store, period, label=label)
+        digest_id = digest_hash(digest)
+
+        if args.dry_run or args.no_send:
+            print("")
+            print("=" * 80)
+            print(digest)
+            continue
+
+        _log(f"Sending digest {index}/{len(periods)}...")
+        send_digest(config.bot.token, config.bot.chat_id, digest)
+        store.record_daily_digest(
+            period_key=period.key,
+            digest_hash=digest_id,
+            start_utc=period.start_utc,
+            end_utc=period.end_utc,
+        )
+        print(f"Sent daily digest: {label}")
+
+    return 0
+
+
+def _daily_periods_to_run(
+    config,
+    store: MessageStore,
+    *,
+    max_days: int | None,
+    force: bool,
+    now: datetime | None = None,
+) -> list[DigestPeriod]:
+    now_local = (now or datetime.now(load_timezone(config.timezone))).astimezone(load_timezone(config.timezone))
+    latest_end_local = latest_completed_daily_end(config.timezone, config.daily_digest_hour, now=now_local)
+    limit = max_days or config.catch_up_max_days
+
+    last_sent_end = None if force else store.latest_daily_period_end()
+    if last_sent_end is None:
+        start_local = latest_end_local - timedelta(days=1)
     else:
-        end_local = datetime.now(tz)
-        start_local = end_local - timedelta(hours=lookback_hours)
-    return (
-        start_local.astimezone(UTC),
-        end_local.astimezone(UTC),
-        start_local,
-        end_local,
-    )
+        start_local = last_sent_end.astimezone(now_local.tzinfo)
+
+    candidates = _split_cursor_periods(start_local, now_local, config.daily_digest_hour)
+    selected = candidates[:limit]
+    if force:
+        return selected
+    return [period for period in selected if not store.has_sent_daily_period(period.key)]
 
 
-def _load_timezone(timezone_name: str):
-    try:
-        return ZoneInfo(timezone_name)
-    except ZoneInfoNotFoundError:
-        if timezone_name == "Asia/Seoul":
-            return timezone(timedelta(hours=9), name="Asia/Seoul")
-        raise
+def _split_cursor_periods(start_local: datetime, now_local: datetime, cutoff_hour: int) -> list[DigestPeriod]:
+    """마지막 발송 이후의 기간을 필요한 만큼만 쪼갠다.
+
+    11시 경계가 아직 안 지났으면 보낼 것이 없다.
+    경계가 1개만 지났으면 늦게 실행된 것으로 보고 현재 시각까지 한 덩어리로 보낸다.
+    경계가 2개 이상 지났으면 오래된 구간만 11시 기준으로 끊고 마지막 구간은 현재까지 묶는다.
+    """
+
+    boundaries = _cutoff_boundaries_after(start_local, now_local, cutoff_hour)
+    if not boundaries:
+        return []
+
+    cut_points = [start_local]
+    if len(boundaries) >= 2:
+        cut_points.extend(boundaries[:-1])
+    cut_points.append(now_local)
+
+    periods: list[DigestPeriod] = []
+    for start, end in zip(cut_points, cut_points[1:]):
+        if end > start:
+            periods.append(make_cursor_period(start, end))
+    return periods
+
+
+def _cutoff_boundaries_after(start_local: datetime, now_local: datetime, cutoff_hour: int) -> list[datetime]:
+    first = start_local.replace(hour=cutoff_hour, minute=0, second=0, microsecond=0)
+    if first <= start_local:
+        first += timedelta(days=1)
+
+    boundaries: list[datetime] = []
+    current = first
+    while current <= now_local:
+        boundaries.append(current)
+        current += timedelta(days=1)
+    return boundaries
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -160,6 +255,13 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--no-send", action="store_true", help="Do not send; print digest")
     run_parser.add_argument("--force-send", action="store_true", help="Send even if same digest was sent")
     run_parser.add_argument("--skip-collect", action="store_true", help="Use existing DB messages only")
+
+    catch_up_parser = subparsers.add_parser("catch-up", parents=[common])
+    catch_up_parser.add_argument("--dry-run", action="store_true", help="Print digests instead of sending")
+    catch_up_parser.add_argument("--no-send", action="store_true", help="Do not send; print digests")
+    catch_up_parser.add_argument("--force-send", action="store_true", help="Ignore daily sent-period history")
+    catch_up_parser.add_argument("--skip-collect", action="store_true", help="Use existing DB messages only")
+    catch_up_parser.add_argument("--max-days", type=int, help="Maximum daily periods to process")
 
     return parser
 

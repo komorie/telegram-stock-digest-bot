@@ -7,7 +7,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from tg_portfolio_bot.digest import build_pdf_attachment_section, build_portfolio_section
+from tg_portfolio_bot.config import AppConfig, BotConfig, LlmConfig, TelegramConfig
+from tg_portfolio_bot.digest import build_digest, build_pdf_attachment_section, build_portfolio_section
 from tg_portfolio_bot.models import CollectedMessage, PortfolioHolding
 
 
@@ -83,6 +84,40 @@ class DigestTests(unittest.TestCase):
         self.assertIn("GOOG_TPU_report.pdf", section)
         self.assertNotIn("GOOG_text_with_pdf.pdf", section)
         self.assertNotIn("SK하이닉스 HBM", section)
+
+    def test_pdf_only_messages_are_not_in_llm_fallback_body_twice(self) -> None:
+        config = AppConfig(
+            database_path=Path("data/test.sqlite3"),
+            timezone="Asia/Seoul",
+            lookback_hours=24,
+            daily_digest_hour=11,
+            catch_up_max_days=7,
+            max_messages_per_channel=500,
+            sources=("research",),
+            telegram=TelegramConfig(api_id=1, api_hash="hash", session_path=Path("data/test.session")),
+            bot=BotConfig(token="", chat_id=""),
+            llm=LlmConfig(
+                enabled=False,
+                api_key="",
+                base_url="https://example.com/v1",
+                model="test",
+                temperature=0.2,
+                timeout_sec=60,
+                max_messages=40,
+                max_chars_per_message=400,
+            ),
+            portfolio=TEST_PORTFOLIO,
+        )
+        digest = build_digest(
+            (
+                _message(1, file_name="JP모건_SK하이닉스_1Q26_실적분석.pdf"),
+                _message(2, "SK하이닉스 HBM 공급 부족 전망"),
+            ),
+            config,
+            start_local=datetime(2026, 5, 1, tzinfo=UTC),
+            end_local=datetime(2026, 5, 2, tzinfo=UTC),
+        )
+        self.assertEqual(digest.count("JP모건_SK하이닉스_1Q26_실적분석.pdf"), 1)
 
 
 if __name__ == "__main__":

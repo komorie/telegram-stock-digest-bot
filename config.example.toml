@@ -4,6 +4,12 @@
 database_path = "data/bot.sqlite3"
 timezone = "Asia/Seoul"
 lookback_hours = 24
+
+# catch-up 명령은 매일 이 시각을 기준으로 기간을 끊는다.
+# 예: 11이면 "전날 11:00 ~ 오늘 10:59"를 한 다이제스트로 처리한다.
+daily_digest_hour = 11
+catch_up_max_days = 7
+
 max_messages_per_channel = 500
 
 # Public usernames, invite links, or entities your Telegram account can access.

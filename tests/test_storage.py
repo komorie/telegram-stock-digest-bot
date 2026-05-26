@@ -35,6 +35,26 @@ class StorageTests(unittest.TestCase):
             rows = store.list_messages(datetime(2026, 5, 1, tzinfo=UTC), datetime(2026, 5, 2, tzinfo=UTC))
             self.assertEqual(len(rows), 1)
 
+    def test_daily_digest_run_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MessageStore(Path(tmp) / "bot.sqlite3")
+            store.init()
+            start = datetime(2026, 5, 25, 2, tzinfo=UTC)
+            end = datetime(2026, 5, 26, 2, tzinfo=UTC)
+
+            self.assertFalse(store.has_sent_daily_period("2026-05-26"))
+            self.assertIsNone(store.latest_daily_period_end())
+
+            store.record_daily_digest(
+                period_key="2026-05-26",
+                digest_hash="abc",
+                start_utc=start,
+                end_utc=end,
+            )
+
+            self.assertTrue(store.has_sent_daily_period("2026-05-26"))
+            self.assertEqual(store.latest_daily_period_end(), end)
+
 
 if __name__ == "__main__":
     unittest.main()

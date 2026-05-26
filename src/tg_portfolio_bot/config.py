@@ -39,6 +39,8 @@ class AppConfig:
     database_path: Path
     timezone: str
     lookback_hours: int
+    daily_digest_hour: int
+    catch_up_max_days: int
     max_messages_per_channel: int
     sources: tuple[str, ...]
     telegram: TelegramConfig
@@ -85,6 +87,8 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
         database_path=Path(os.getenv("DATABASE_PATH") or raw.get("database_path", "data/bot.sqlite3")),
         timezone=str(os.getenv("APP_TIMEZONE") or raw.get("timezone", "Asia/Seoul")),
         lookback_hours=int(os.getenv("LOOKBACK_HOURS") or raw.get("lookback_hours", 24)),
+        daily_digest_hour=int(os.getenv("DAILY_DIGEST_HOUR") or raw.get("daily_digest_hour", 11)),
+        catch_up_max_days=int(os.getenv("CATCH_UP_MAX_DAYS") or raw.get("catch_up_max_days", 7)),
         max_messages_per_channel=int(os.getenv("MAX_MESSAGES_PER_CHANNEL") or raw.get("max_messages_per_channel", 500)),
         sources=tuple(str(source).strip() for source in sources if str(source).strip()),
         telegram=TelegramConfig(
@@ -126,6 +130,10 @@ def validate_config(config: AppConfig, *, require_telegram: bool = False, requir
             errors.append("bot.chat_id or TELEGRAM_CHAT_ID is required")
     if not config.portfolio:
         errors.append("portfolio.holdings must contain at least one holding")
+    if not 0 <= config.daily_digest_hour <= 23:
+        errors.append("daily_digest_hour must be between 0 and 23")
+    if config.catch_up_max_days < 1:
+        errors.append("catch_up_max_days must be at least 1")
     if errors:
         raise ValueError("; ".join(errors))
 
