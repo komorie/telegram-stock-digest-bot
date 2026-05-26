@@ -57,79 +57,61 @@ notepad config.toml
 
 전화번호, 인증코드, 2FA 비밀번호를 물을 수 있습니다. 성공하면 `data/telegram.session`이 생기고 이후 재사용됩니다.
 
-### 5. 실행
+### 5. 명령어 모음
 
-수집 + 요약을 화면에만 출력:
+모든 명령은 PowerShell에서 `C:\Projects\Telegram` 폴더에서 실행.
 
-```powershell
-.\.venv\Scripts\python.exe -m tg_portfolio_bot run --config config.toml --dry-run
-```
+| 명령                     | 동작                                                 |
+| ------------------------ | ---------------------------------------------------- |
+| `.\catch-up.cmd`         | 마지막 발송 이후 누락분을 정리해서 텔레그램으로 발송 |
+| `.\catch-up-dry-run.cmd` | 위와 같지만 화면에만 출력 (발송 안 함)               |
+| `.\run-dry-run.cmd`      | 최근 24시간 기준 수집+요약, 화면 출력 (테스트용)     |
+| `.\collect.cmd`          | 메시지 수집만. 첫 로그인이나 문제 진단용             |
+| `.\test.cmd`             | 테스트 실행                                          |
 
-수집 + 요약 + 텔레그램 발송:
+### 6. catch-up 동작 방식
 
-```powershell
-.\.venv\Scripts\python.exe -m tg_portfolio_bot run --config config.toml
-```
+**catch-up은 작업 스케줄러용 명령**. 매일 11:00에 자동 실행되도록 등록하면 됨.
 
-수집만:
+**핵심 원리**: 마지막 발송 시각을 DB에 기록 → 다음 실행 때 그 시점부터 이어서 처리. 사용자가 시간 계산할 필요 없음.
 
-```powershell
-.\.venv\Scripts\python.exe -m tg_portfolio_bot collect --config config.toml
-```
+**기준**: `daily_digest_hour = 11` (11:00이 하루 경계)
 
-이미 저장된 DB만 가지고 요약:
+#### 4가지 규칙
 
-```powershell
-.\.venv\Scripts\python.exe -m tg_portfolio_bot digest --config config.toml
-```
+1. 새 11:00 경계가 안 지났으면 → **발송 안 함**
+2. 11:00 놓쳤지만 하루 늦은 정도면 → **현재까지 한 번에 발송**
+3. 이틀 이상 밀렸으면 → **오래된 구간부터 여러 번 나눠 발송**
+4. 첫 실행이라 기록 없으면 → **최신 완료 구간 1개만**
 
-특정 날짜 기준:
+#### 상황별 예시
 
-```powershell
-.\.venv\Scripts\python.exe -m tg_portfolio_bot run --config config.toml --date 2026-05-03 --dry-run
-```
+| 상황                       | 결과              |
+| -------------------------- | ----------------- |
+| 방금 발송 후 5분 뒤 재실행 | 발송 없음         |
+| 11:00 전 실행              | 발송 없음         |
+| 11:00 지나 당일 실행       | 1개 발송          |
+| 며칠 끄고 켠 후 실행       | 여러 개 나눠 발송 |
+| 첫 실행                    | 최신 1개          |
 
-마지막 발송 이후 누락된 daily digest를 처리:
-
-```powershell
-.\.venv\Scripts\python.exe -m tg_portfolio_bot catch-up --config config.toml
-```
-
-테스트 출력만 보고 발송하지 않기:
-
-```powershell
-.\.venv\Scripts\python.exe -m tg_portfolio_bot catch-up --config config.toml --dry-run
-```
-
-`catch-up`은 마지막으로 성공 발송한 daily 기간을 DB에 기록합니다. PC가 며칠 꺼져 있었다면 다음 실행 때 누락된 기간을 `전날 11:00 ~ 오늘 10:59` 단위로 나눠 순서대로 발송합니다. 기록이 전혀 없는 첫 실행에서는 최신 완료 구간 1개만 처리합니다.
-
-`catch-up`의 기준 시각은 `daily_digest_hour = 11`입니다. 다만 실제 실행 시각이 11:00보다 늦어질 수 있으므로, v2는 고정된 날짜만 보지 않고 "마지막 발송 종료 시각 → 현재 실행 시각"을 기준으로 처리합니다.
-
-동작 정책:
-
-- 11:00 이전에 실행했고, 마지막 발송 이후 아직 새 11:00 경계가 지나지 않았다면 발송하지 않습니다.
-- 11:00 정규 실행을 놓쳤지만 하루만 늦었다면, 마지막 발송 종료 시각부터 현재 실행 시각까지 한 덩어리로 보냅니다.
-- PC를 모레 이후에 켜는 식으로 11:00 경계가 2개 이상 밀렸다면, 오래된 구간부터 나눠서 여러 개의 다이제스트를 보냅니다.
-- 쌓인 구간이 2개로 계산되면 텔레그램 발송도 2번 일어납니다.
-
-예시:
+#### 실제 타임라인 예시
 
 ```text
-5월 26일 23:20 첫 실행
-→ 5월 25일 11:00 ~ 5월 26일 23:20
+[5/26 23:20] 첫 실행
+  → 5/25 11:00 ~ 5/26 23:20 발송
 
-그다음 5월 27일 10:59 실행
-→ 아직 11:00 경계 전이므로 발송 없음
+[5/27 10:59] 실행
+  → 아직 11:00 전, 발송 없음
 
-그다음 5월 27일 14:00 실행
-→ 5월 26일 23:20 ~ 5월 27일 14:00
+[5/27 14:00] 실행
+  → 5/26 23:20 ~ 5/27 14:00 발송
 
-5월 26일 23:20 이후 PC를 끄고 5월 28일 14:00에 실행
-→ 5월 26일 23:20 ~ 5월 27일 10:59
-→ 5월 27일 11:00 ~ 5월 28일 14:00
+[5/26 23:20 이후 PC 끄고 5/28 14:00 실행]
+  → 5/26 23:20 ~ 5/27 10:59 발송
+  → 5/27 11:00 ~ 5/28 14:00 발송
 ```
 
-### 6. LLM 설정
+### 7. LLM 설정
 
 Gemini OpenAI 호환 엔드포인트 예시:
 
@@ -147,9 +129,31 @@ max_chars_per_message = 400
 
 LLM이 켜져 있으면 주요 뉴스와 포트폴리오 섹션을 LLM이 함께 요약합니다. LLM이 꺼져 있거나 실패하면 규칙 기반 기본 요약으로 돌아갑니다.
 
-### 7. Windows 작업 스케줄러 예시
+### 8. Windows 작업 스케줄러 예시
 
 작업 스케줄러에는 매일 11:00 실행으로 등록합니다. `설정` 탭에서 `예약된 시작 시간을 놓친 경우 가능한 한 빨리 작업 실행`을 켜면, 11:00에 PC가 꺼져 있었더라도 그날 처음 켰을 때 `catch-up`이 실행됩니다.
+
+짧은 실행 파일을 쓰는 방식:
+
+프로그램:
+
+```text
+C:\Projects\Telegram\catch-up.cmd
+```
+
+인수:
+
+```text
+비워둠
+```
+
+시작 위치:
+
+```text
+C:\Projects\Telegram
+```
+
+원본 Python 명령을 직접 등록하는 방식:
 
 프로그램:
 
@@ -169,7 +173,7 @@ C:\Projects\Telegram\.venv\Scripts\python.exe
 C:\Projects\Telegram
 ```
 
-### 8. 테스트
+### 9. 테스트
 
 ```powershell
 .\.venv\Scripts\python.exe -B -m unittest discover -s tests
