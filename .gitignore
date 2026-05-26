@@ -1,0 +1,10 @@
+.env
+config.toml
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+data/*.sqlite3
+data/*.sqlite3-*
+data/*.session
+data/*.session-*

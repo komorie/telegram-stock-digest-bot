@@ -1,0 +1,102 @@
+# Copy this file to config.toml and fill in real values.
+# Never commit config.toml, .env, Telegram session files, or SQLite databases.
+
+database_path = "data/bot.sqlite3"
+timezone = "Asia/Seoul"
+lookback_hours = 24
+max_messages_per_channel = 500
+
+# Public usernames, invite links, or entities your Telegram account can access.
+sources = [
+  "aetherjapanresearch",
+  "kwusa",
+]
+
+[telegram]
+# Get these from https://my.telegram.org.
+api_id = 0
+api_hash = ""
+session_path = "data/telegram.session"
+
+[bot]
+# BotFather bot is only used to send the final digest to you.
+token = ""
+chat_id = ""
+
+[llm]
+# If disabled, the bot uses a deterministic extractive digest.
+enabled = false
+
+# Gemini example:
+# enabled = true
+# api_key = "YOUR_GEMINI_API_KEY"
+# base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+# model = "gemini-2.5-flash"
+
+# OpenAI-compatible endpoints work for Gemini, OpenAI, Groq, OpenRouter, and similar APIs.
+api_key = ""
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+model = "gemini-2.5-flash"
+temperature = 0.2
+timeout_sec = 180
+
+# LLM 입력이 너무 크면 Gemini 응답이 느려져 timeout이 날 수 있다.
+# 처음에는 작게 시작하고, 요약 품질이 부족하면 늘리는 쪽이 안정적이다.
+max_messages = 40
+max_chars_per_message = 400
+
+[[portfolio.holdings]]
+ticker = "000660.KS"
+display_name = "SK하이닉스"
+emoji = "🚀"
+aliases = ["SK하이닉스", "SK hynix", "SK Hynix", "하이닉스", "Hynix", "000660"]
+keywords = ["HBM", "DRAM", "메모리", "memory", "삼성", "Samsung", "마이크론", "Micron", "eSSD", "LPDDR"]
+
+[[portfolio.holdings]]
+ticker = "SNDK"
+display_name = "샌디스크"
+emoji = "💾"
+aliases = ["SNDK", "SanDisk", "Sandisk", "샌디스크"]
+keywords = ["NAND", "SSD", "스토리지", "storage", "flash memory", "플래시", "eSSD"]
+
+[[portfolio.holdings]]
+ticker = "GOOG"
+display_name = "구글/알파벳"
+emoji = "🌐"
+aliases = ["GOOG", "GOOGL", "Google", "Alphabet", "구글", "알파벳"]
+keywords = ["TPU", "GCP", "Google Cloud", "클라우드", "검색", "search", "YouTube", "유튜브", "Waymo", "웨이모", "Gemini", "Anthropic", "앤트로픽"]
+
+[[portfolio.holdings]]
+ticker = "PRAX"
+display_name = "Praxis Precision Medicines"
+emoji = "🧬"
+aliases = ["PRAX", "Praxis Precision Medicines", "Praxis"]
+keywords = ["epilepsy", "뇌전증", "CNS", "FDA", "biotech", "바이오텍", "ulixacaltamide"]
+
+[[portfolio.holdings]]
+ticker = "NTRA"
+display_name = "Natera"
+emoji = "🧪"
+aliases = ["NTRA", "Natera"]
+keywords = ["genetic testing", "유전자 검사", "oncology diagnostics", "종양 진단", "prenatal", "산전 검사", "Signatera"]
+
+[[portfolio.holdings]]
+ticker = "TEVA"
+display_name = "Teva Pharmaceutical"
+emoji = "💊"
+aliases = ["TEVA", "Teva", "Teva Pharmaceutical", "테바"]
+keywords = ["generic drugs", "제네릭", "Austedo", "biosimilar", "바이오시밀러"]
+
+[[portfolio.holdings]]
+ticker = "CRCL"
+display_name = "Circle"
+emoji = "🪙"
+aliases = ["CRCL", "Circle", "서클"]
+keywords = ["USDC", "stablecoin", "스테이블코인", "crypto regulation", "가상자산", "DeFi"]
+
+[[portfolio.holdings]]
+ticker = "RDDT"
+display_name = "Reddit"
+emoji = "📱"
+aliases = ["RDDT", "Reddit", "레딧"]
+keywords = ["social media", "소셜미디어", "ad revenue", "광고 매출", "AI data licensing", "데이터 라이선싱"]
