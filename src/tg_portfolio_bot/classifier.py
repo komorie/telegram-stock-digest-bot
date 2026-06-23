@@ -11,8 +11,8 @@ def classify_message(
 ) -> tuple[PortfolioMatch, ...]:
     """메시지 하나를 보유 종목 별칭과 관련 섹터 키워드에 매칭한다.
 
-    텍스트와 파일명을 모두 검사하므로, PDF 본문을 읽지 않아도
-    PDF 단독 리포트를 관련 종목에 붙일 수 있다.
+    텍스트와 파일명을 모두 검사할 수 있다.
+    현재 다이제스트 출력에서는 PDF 단독 파일을 별도 리포트 섹션으로 만들지 않는다.
     """
     haystack = message.searchable_text
     if not haystack.strip():

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 from .collector import collect_messages
 from .config import load_config, load_env_file, validate_config
-from .digest import build_digest, digest_hash
+from .digest import DigestBuildError, build_digest, digest_hash
 from .periods import (
     DigestPeriod,
     latest_completed_daily_end,
@@ -51,7 +51,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "digest":
         period = _period(config.timezone, config.lookback_hours, args.date)
-        digest = _render(config, store, period)
+        try:
+            digest = _render(config, store, period)
+        except DigestBuildError as exc:
+            print(f"Digest was not generated: {exc}")
+            return 1
         print(digest)
         return 0
     if args.command == "run":
@@ -62,7 +66,11 @@ def main(argv: list[str] | None = None) -> int:
             inserted = asyncio.run(_collect(config, store, period.start_utc))
             print(f"Inserted {inserted} new messages.")
         _log("Building digest...")
-        digest = _render(config, store, period)
+        try:
+            digest = _render(config, store, period)
+        except DigestBuildError as exc:
+            print(f"Digest was not generated: {exc}")
+            return 1
         digest_id = digest_hash(digest)
         if args.dry_run or args.no_send:
             print(digest)
@@ -149,7 +157,11 @@ def _catch_up(config, store: MessageStore, args) -> int:
     for index, period in enumerate(periods, start=1):
         label = period_label(period)
         _log(f"Building digest {index}/{len(periods)}: {label}")
-        digest = _render(config, store, period, label=label)
+        try:
+            digest = _render(config, store, period, label=label)
+        except DigestBuildError as exc:
+            print(f"Digest was not generated for {label}: {exc}")
+            return 1
         digest_id = digest_hash(digest)
 
         if args.dry_run or args.no_send:

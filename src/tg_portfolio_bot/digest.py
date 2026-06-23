@@ -11,6 +11,10 @@ from .llm import generate_full_digest, generate_general_digest
 from .models import CollectedMessage, PortfolioHolding, PortfolioMatch
 
 
+class DigestBuildError(RuntimeError):
+    """다이제스트를 신뢰할 수 있게 만들지 못했을 때 사용한다."""
+
+
 def build_digest(
     messages: tuple[CollectedMessage, ...],
     config: AppConfig,
@@ -22,22 +26,27 @@ def build_digest(
     """최종 텔레그램 메시지를 만든다.
 
     LLM이 켜져 있으면 일반 뉴스와 포트폴리오 섹션을 한 번에 요약하게 한다.
-    LLM이 꺼져 있거나 실패하면 규칙 기반 요약으로 돌아간다.
-    PDF 단독 첨부 파일 목록은 LLM 결과 뒤에 코드로 보강한다.
+    LLM이 꺼져 있으면 규칙 기반 요약으로 돌아간다.
+    LLM이 켜져 있는데 실패하면 해당 기간을 미처리로 남기기 위해 예외를 낸다.
+    PDF 단독 첨부 파일은 LLM 입력에서 제외한다.
     """
     period_label = period_label_override or format_period(start_local, end_local)
     llm_messages = tuple(message for message in messages if not _is_pdf_only(message))
+    if config.llm.enabled and not config.llm.api_key:
+        raise DigestBuildError("LLM is enabled, but llm.api_key is empty.")
+
     try:
         generated = generate_full_digest(config.llm, llm_messages, config.portfolio, period_label=period_label)
     except RuntimeError as exc:
+        if config.llm.enabled:
+            raise DigestBuildError(f"LLM 요약 실패: {exc}") from exc
         generated = None
         fallback_note = f"\n\n<i>LLM 요약 실패: {html.escape(str(exc))}</i>"
     else:
         fallback_note = ""
 
     if generated:
-        attachment_section = build_pdf_attachment_section(messages, config.portfolio)
-        return f"<b>다이제스트</b> | <b>{html.escape(period_label)}</b>\n\n{generated}\n\n{attachment_section}".strip()
+        return f"<b>다이제스트</b> | <b>{html.escape(period_label)}</b>\n\n{generated}".strip()
 
     general = _build_general_digest(messages, config, period_label, allow_llm=not fallback_note)
     portfolio = build_portfolio_section(messages, config.portfolio)
@@ -62,7 +71,7 @@ def build_portfolio_section(
     """수집된 메시지를 매칭된 보유 종목 아래로 묶는다.
 
     텍스트 메시지는 짧은 불릿으로 만든다.
-    PDF 단독 메시지는 v1에서 본문을 읽지 않으므로 첨부 링크로만 보여준다.
+    PDF 단독 메시지는 본문을 읽지 않으므로 출력에서 제외한다.
     """
     grouped: dict[str, list[tuple[CollectedMessage, PortfolioMatch]]] = defaultdict(list)
     for message in messages:
@@ -79,68 +88,21 @@ def build_portfolio_section(
         if not items:
             continue
 
-        # PDF 단독 메시지는 일부러 요약하지 않고 파일 링크만 노출한다.
+        # PDF 단독 메시지는 파일명만 보고 내용을 꾸미지 않도록 출력하지 않는다.
         text_items = [item for item in items if not _is_pdf_only(item[0])]
-        pdf_items = [item for item in items if item[0].is_pdf and item[0].file_name]
+        if not text_items:
+            continue
 
         lines.append("")
         lines.append(f"<b>{holding.emoji} {html.escape(holding.display_name)} ({html.escape(holding.ticker)})</b>")
 
-        lead = _lead_sentence(holding, text_items or items)
+        lead = _lead_sentence(holding, text_items)
         if lead:
             lines.append(lead)
 
         for message, match in text_items[:5]:
             lines.append(_message_bullet(message, match))
 
-        if pdf_items:
-            lines.append("📎 <b>첨부 파일</b>")
-            seen_urls: set[str] = set()
-            for message, _match in pdf_items:
-                url = message.url or ""
-                key = url or f"{message.channel_id}:{message.message_id}:{message.file_name}"
-                if key in seen_urls:
-                    continue
-                seen_urls.add(key)
-                title = html.escape(message.file_name or "첨부 파일")
-                lines.append(f"— {_link(title, url)}")
-
-    return "\n".join(lines)
-
-
-def build_pdf_attachment_section(
-    messages: tuple[CollectedMessage, ...],
-    holdings: tuple[PortfolioHolding, ...],
-) -> str:
-    """LLM 요약 뒤에 붙일 PDF 단독 첨부 목록을 만든다.
-
-    LLM은 파일 내용을 읽지 못하므로, 파일명/링크만 코드가 확실하게 보존한다.
-    """
-    grouped: dict[str, list[CollectedMessage]] = defaultdict(list)
-    for message in messages:
-        if not _is_pdf_only(message):
-            continue
-        for match in classify_message(message, holdings):
-            grouped[match.holding.ticker].append(message)
-
-    if not grouped:
-        return ""
-
-    holding_by_ticker = {holding.ticker: holding for holding in holdings}
-    lines = ["<b>📎 포트폴리오 관련 첨부 파일</b>"]
-    for ticker, pdf_messages in grouped.items():
-        holding = holding_by_ticker[ticker]
-        lines.append("")
-        lines.append(f"<b>{holding.emoji} {html.escape(holding.display_name)} ({html.escape(holding.ticker)})</b>")
-        seen_urls: set[str] = set()
-        for message in pdf_messages:
-            url = message.url or ""
-            key = url or f"{message.channel_id}:{message.message_id}:{message.file_name}"
-            if key in seen_urls:
-                continue
-            seen_urls.add(key)
-            title = html.escape(message.file_name or "첨부 파일")
-            lines.append(f"— {_link(title, url)}")
     return "\n".join(lines)
 
 
@@ -187,8 +149,6 @@ def _lead_sentence(
     items: list[tuple[CollectedMessage, PortfolioMatch]],
 ) -> str:
     direct_count = sum(1 for _message, match in items if match.is_direct)
-    pdf_count = sum(1 for message, _match in items if message.is_pdf and message.file_name)
-
     terms: list[str] = []
     for _message, match in items:
         terms.extend(match.matched_terms[:2])
@@ -197,8 +157,6 @@ def _lead_sentence(
     parts: list[str] = []
     if direct_count:
         parts.append(f"직접 언급 {direct_count}건")
-    if pdf_count:
-        parts.append(f"PDF {pdf_count}건")
     if not parts:
         parts.append(f"관련 신호 {len(items)}건")
 
